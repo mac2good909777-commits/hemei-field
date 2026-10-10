@@ -152,11 +152,10 @@ footer{background:var(--f);color:var(--foot);padding:20px 40px;font-size:13px;li
 <div class="toolbar">
 <button type="button" id="exp">匯出 CSV 回報</button>
 <button type="button" class="ghost" id="clr">清除本機紀錄</button>
-<span class="cnt" id="cnt"></span>
+<label style="font-size:14px">我是 <input id="me" placeholder="輸入你的名字" style="width:110px;padding:4px 6px"></label><span class="cnt" id="sync" style="color:#2B5A8C"></span><span class="cnt" id="cnt"></span>
 </div>
 <p class="mini" style="font-size:13px;color:#777;margin:8px 0 0">
-紀錄會自動存在<b>這台裝置的瀏覽器裡</b>，關掉頁面也還在；
-但<b>不會自動回傳</b>，跑完請按「匯出 CSV 回報」把檔案傳回公司。</p>
+紀錄會<b>自動同步到共用試算表</b>，所有人都看得到彼此填的內容（約 30 秒更新）。請先在上方輸入你的名字。</p>
 <div class="tw"><table>
 <thead><tr><th class="c">順位</th><th>戶籍地</th><th class="c">地主</th><th class="c">人數</th>
 <th class="n">坪數</th><th>持有地號</th><th class="c">臨路</th><th class="c">狀態</th></tr></thead>
@@ -212,6 +211,42 @@ footer{background:var(--f);color:var(--foot);padding:20px 40px;font-size:13px;li
     try { localStorage.setItem(KEY, JSON.stringify(d)); return true; } catch (e) { return false; }
   }
   var data = load();
+  var API = 'https://script.google.com/macros/s/AKfycbwnogL38HE6nqb6J5tE1c9ef1t1W0BKfagGi3TO0QVMLmODRB1BvJ9ApHofpJ6vPqGp/exec', FIELDS = ['date','result','price','who','tel','memo'];
+  var me = ''; try { me = localStorage.getItem('hemei_me') || ''; } catch (e) {}
+  var pend = []; try { pend = JSON.parse(localStorage.getItem('hemei_pend') || '[]'); } catch (e) {}
+  function savePend() { try { localStorage.setItem('hemei_pend', JSON.stringify(pend)); } catch (e) {} }
+  function setSync(t) { var x = document.getElementById('sync'); if (x) x.textContent = t; }
+  var meEl = document.getElementById('me');
+  if (meEl) { meEl.value = me; meEl.addEventListener('change', function () { me = meEl.value.trim(); try { localStorage.setItem('hemei_me', me); } catch (e) {} }); }
+  var busy = false;
+  function flush() {
+    if (!API || !pend.length || busy) return;
+    busy = true;
+    var batch = pend.slice();
+    fetch(API, {method: 'POST', headers: {'Content-Type': 'text/plain'}, body: JSON.stringify({by: me, items: batch})})
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (!j.ok) throw 0; pend = pend.slice(batch.length); savePend(); busy = false; setSync('已同步'); if (pend.length) flush(); })
+      .catch(function () { busy = false; setSync('未同步（稍後自動重試）'); });
+  }
+  function pull() {
+    if (!API) return;
+    fetch(API).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j.ok) return;
+      var act = document.activeElement;
+      j.rows.forEach(function (r) {
+        var k = r.k; data[k] = data[k] || {};
+        FIELDS.forEach(function (f) {
+          var el = document.querySelector('[data-rec="' + k + '"] [data-f="' + f + '"]');
+          if (el && el === act) return;
+          if (pend.some(function (p) { return p.k == k && p.f == f; })) return;
+          data[k][f] = r[f]; if (el) el.value = r[f];
+        });
+        data[k]._t = r._t; data[k]._by = r.by; paint(k);
+      });
+      save(data); count();
+    }).catch(function () {});
+  }
+
 
   function statusOf(o) {
     if (!o) return '';
@@ -222,7 +257,7 @@ footer{background:var(--f);color:var(--foot);padding:20px 40px;font-size:13px;li
     var s = statusOf(data[k]);
     if (st) { st.textContent = s || '—'; st.classList.toggle('on', !!s); }
     var rs = document.querySelector('[data-saved="' + k + '"]');
-    if (rs) rs.textContent = data[k] && data[k]._t ? '已儲存 ' + data[k]._t : '';
+    if (rs) rs.textContent = data[k] && data[k]._t ? '已儲存 ' + data[k]._t + (data[k]._by ? '（' + data[k]._by + '）' : '') : '';
   }
   function count() {
     var n = Object.keys(data).filter(function (k) { return statusOf(data[k]); }).length;
@@ -240,12 +275,23 @@ footer{background:var(--f);color:var(--foot);padding:20px 40px;font-size:13px;li
         data[k] = data[k] || {};
         data[k][f] = el.value;
         data[k]._t = new Date().toLocaleString('zh-TW', {hour12: false});
+        data[k]._by = me;
         save(data); paint(k); count();
+        if (API) {
+          if (!me) { alert('請先在上方輸入你的名字，這筆才會同步給其他人。'); }
+          pend = pend.filter(function (p) { return !(p.k == k && p.f == f); });
+          pend.push({k: k, f: f, v: el.value}); savePend(); flush();
+        }
       });
     });
     paint(k);
   });
   count();
+  if (API) {
+    var clr = document.getElementById('clr'); if (clr) clr.style.display = 'none';
+    pull(); flush(); setInterval(function () { pull(); flush(); }, 30000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) pull(); });
+  }
 
   // 懶載入 Google 地圖
   document.querySelectorAll('button[data-embed]').forEach(function (b) {
